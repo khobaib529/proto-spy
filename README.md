@@ -1,7 +1,5 @@
 # proto-spy
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 A network protocol inspection tool for deep diving into TCP/UDP packet structures. Created to strengthen low-level networking understanding through practical implementation.
 
 ## Features
