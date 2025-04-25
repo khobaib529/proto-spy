@@ -1,77 +1,80 @@
-#define _BSD_SOURCE
-#define _DEFAULT_SOURCE
-
-#include "tcp_listener.h"
-
 #include <arpa/inet.h>
+#include <netinet/ether.h>
 #include <netinet/ip.h>
-#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <cstdio>
-#include <cstdlib>
+#include <array>
 #include <cstring>
 #include <iostream>
 
 #include "tcp_packet.h"
 
-void listen_tcp() {
-  int sock_raw;
-  uint8_t buffer[65536];
-  socklen_t saddr_len;
-  struct sockaddr_in saddr;
-
-  // Create raw socket
-  if ((sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0) {
-    perror("socket");
-    exit(EXIT_FAILURE);
+class RawSocket {
+ public:
+  explicit RawSocket(int protocol)
+      : fd_(socket(AF_PACKET, SOCK_RAW, htons(protocol))) {
+    if (fd_ < 0) {
+      perror("socket");
+      std::exit(EXIT_FAILURE);
+    }
   }
 
-  std::cout << "Listening for TCP packets... (run as root)\n";
+  ~RawSocket() {
+    if (fd_ >= 0) close(fd_);
+  }
+
+  ssize_t receive(uint8_t* buf, size_t len) const {
+    return ::recvfrom(fd_, buf, len, 0, nullptr, nullptr);
+  }
+
+ private:
+  int fd_;
+};
+
+void listen_tcp() {
+  RawSocket sock(ETH_P_ALL);
+  std::cout << "Listening for TCP packets..." << std::endl;
+  std::cout << "Fields starting with * are not part of the TCP packet\n";
+
+  constexpr size_t kMaxPacketSize = 65536;
+  std::array<uint8_t, kMaxPacketSize> buffer;
+  TCPPacket packet;
 
   while (true) {
-    saddr_len = sizeof(saddr);
-    int packet_size = recvfrom(sock_raw, buffer, sizeof(buffer), 0,
-                               (struct sockaddr*)&saddr, &saddr_len);
+    ssize_t packet_size = sock.receive(buffer.data(), buffer.size());
     if (packet_size < 0) {
       perror("recvfrom");
-      close(sock_raw);
-      exit(EXIT_FAILURE);
+      std::exit(EXIT_FAILURE);
     }
 
-    // Parse IP header
-    struct iphdr* iph = reinterpret_cast<struct iphdr*>(buffer);
-    if (iph->protocol != IPPROTO_TCP) continue;
-
-    // Calculate header lengths
-    uint16_t ip_hlen = iph->ihl * 4;
-    if (ip_hlen < 20 || packet_size < ip_hlen) {
-      std::cerr << "Invalid IP header\n";
+    // Must contain at least Ethernet + IP headers
+    if (packet_size < static_cast<ssize_t>(sizeof(ethhdr) + sizeof(iphdr)))
       continue;
-    }
 
-    // Extract TCP segment
-    uint8_t* tcp_segment = buffer + ip_hlen;
-    size_t tcp_segment_len = packet_size - ip_hlen;
+    const ethhdr* eth = reinterpret_cast<ethhdr*>(buffer.data());
+    if (eth->h_proto != htons(ETH_P_IP)) continue;
 
-    // Decode TCP packet
-    TCPPacket packet;
-    if (!packet.DecodeFrom(tcp_segment, tcp_segment_len)) {
-      std::cerr << "Failed to decode TCP packet\n";
+    const iphdr* ip = reinterpret_cast<iphdr*>(buffer.data() + sizeof(ethhdr));
+    if (ip->version != 4 || ip->protocol != IPPROTO_TCP) continue;
+
+    size_t ip_header_len = ip->ihl * 4;
+    size_t payload_offset = sizeof(ethhdr) + ip_header_len;
+    if (packet_size < static_cast<ssize_t>(payload_offset + sizeof(tcphdr)))
       continue;
-    }
 
-    // Format source/dest addresses
+    const uint8_t* tcp_segment = buffer.data() + payload_offset;
+    size_t tcp_segment_len = packet_size - payload_offset;
+
+    if (!packet.DecodeFrom(tcp_segment, tcp_segment_len)) continue;
+
     char src_ip[INET_ADDRSTRLEN], dst_ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(iph->saddr), src_ip, INET_ADDRSTRLEN);
-    inet_ntop(AF_INET, &(iph->daddr), dst_ip, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &ip->saddr, src_ip, sizeof(src_ip));
+    inet_ntop(AF_INET, &ip->daddr, dst_ip, sizeof(dst_ip));
 
-    // Print results
-    std::cout << "\n=========================\n"
-              << "Source: " << src_ip << ":" << packet.source_port << "\n"
-              << "Destination: " << dst_ip << ":" << packet.dest_port << "\n"
-              << packet.DebugString() << "=========================\n";
+    std::cout << "\n===== TCP Packet =====" << "\n* From: " << src_ip
+              << "\n* To:   " << dst_ip << "\n"
+              << packet.DebugString()
+              << "\n=========================" << std::endl;
   }
-  close(sock_raw);
 }

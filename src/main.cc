@@ -57,7 +57,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Starting TCP packet inspection...\n";
         listen_tcp();
       } else if (value == "udp") {
-        std::cout << "UDP inspection not implemented\n";
+        std::cout << "Starting UDP packet inspection...\n";
+        listen_udp();
       } else {
         std::cerr << "Unsupported protocol: " << value << "\n";
         return 1;
@@ -68,8 +69,9 @@ int main(int argc, char* argv[]) {
 
   if (!protocol_specified) {
     std::cerr << "Missing required --protocol argument\n";
-    return 1;
+    Usage(argv[0]);
+    return EXIT_FAILURE;
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
